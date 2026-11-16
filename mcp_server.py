@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import base64
 import json
-from mcp.server.fastmcp import FastMCP, Image
+
+try:  # mcp 2.x renamed FastMCP to MCPServer
+    from mcp.server.mcpserver import MCPServer as FastMCP, Image
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP, Image
+
 from bridge import request
 
 mcp = FastMCP("OpenCode Visual Control")

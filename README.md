@@ -1,6 +1,6 @@
 # OpenCode Visual Control
 
-**Open-source prototype (v0.2.0)** — Codex-style **visible** desktop control for Windows 10/11 using OpenCode, an MCP server and a persistent safety overlay.
+**Open-source prototype (v0.2.1)** — Codex-style **visible** desktop control for Windows 10/11 using OpenCode, an MCP server and a persistent safety overlay.
 
 [Русский](#русский) · [English](#english)
 
@@ -36,6 +36,7 @@
 
 - Windows 10/11, обычная **разблокированная интерактивная сессия**, основной монитор.
 - Python 3.10+ (`python` доступен в PATH), OpenCode, PowerShell.
+- MCP Python SDK **1.x или 2.x** — установщик ставит зависимости в отдельную виртуальную среду, и `mcp_server.py` сам выбирает нужный импорт (`FastMCP` в 1.x, `MCPServer` в 2.x).
 - Интернет при установке Python-зависимостей.
 - OpenCode 2: установщик по умолчанию. Для OpenCode 1 передать `-Legacy`.
 
@@ -102,6 +103,11 @@ python -m compileall -q actions.py bridge.py host.py mcp_server.py
 
 Юнит-тесты проверяют запрет действий в состоянии паузы, валидацию координат, запрещённое сочетание с Esc, перемещение и безопасное отпускание кнопки мыши при прерывании, а также независимость ввода от раскладки. Саму Windows GUI-интеграцию нужно тестировать вручную.
 
+### Обновления v0.2.1
+
+- **Поддержка MCP Python SDK 2.x.** В SDK 2.0 `FastMCP` переименован в `MCPServer` (`mcp.server.mcpserver`), а `mcp.server.fastmcp` теперь выдаёт ошибку с подсказкой закрепить `mcp<2`. `mcp_server.py` импортирует тот или иной класс в зависимости от установленной версии, поэтому проект работает на 1.x и на 2.x.
+- **Расширены ограничения зависимостей:** `mcp>=1.10,<3`, `Pillow>=10,<14`. Проверено на `mcp 2.3.0` + `Pillow 13.0.0`: хендшейк по stdio, `tools/list` со всеми инструментами, вызов `computer_status` и возврат изображения скриншота (`image/png`).
+
 ### Исправленные проблемы v0.1.1
 
 - **Ввод терял буквы на не-US раскладке.** PyAutoGUI строит таблицу клавиш через `VkKeyScan` по раскладке, активной в момент импорта. При русской раскладке каждая латинская буква получала код `-1` и молча отбрасывалась: `computer_type` печатал только цифры и знаки препинания, но сообщал об успехе, а `ctrl+v` не нажимал `v`, из-за чего весь Unicode-путь через буфер обмена не работал. Теперь ввод идёт через `SendInput` с `KEYEVENTF_UNICODE`, раскладка не важна, буфер обмена не изменяется, зависимость `pyperclip` удалена.
@@ -114,7 +120,7 @@ Windows-only, Codex-style **visible desktop automation** for OpenCode via a Pyth
 
 **Quick start:** install Python 3.10+ and OpenCode, then from Windows PowerShell run `Set-ExecutionPolicy -Scope Process Bypass`, `.\install.ps1`, and `.\start-host.ps1`. Click **RESUME** in the overlay, restart OpenCode, and ask the agent to use the `visual_computer` MCP tools. For older OpenCode 1 installations, use `.\install.ps1 -Legacy`.
 
-**Security:** always starts paused, local loopback with random token, no shell tool; screen images are then sent through the configured LLM provider by OpenCode. Typing is layout-independent and does not touch the clipboard. Multi-monitor and physical-pixel coordinate support introduced in v0.2.0 (needs real mixed-DPI verification). v0.1.1 input and overlay fixes were verified by hand on Windows 11 with a Russian keyboard layout; v0.2.0 multi-monitor and mixed-DPI workflows still need physical Windows verification. This is not an official Codex integration.
+**Security:** always starts paused, local loopback with random token, no shell tool; screen images are then sent through the configured LLM provider by OpenCode. Typing is layout-independent and does not touch the clipboard. Multi-monitor and physical-pixel coordinate support introduced in v0.2.0 (needs real mixed-DPI verification). Works with MCP Python SDK 1.x and 2.x. v0.1.1 input and overlay fixes were verified by hand on Windows 11 with a Russian keyboard layout; v0.2.0 multi-monitor and mixed-DPI workflows still need physical Windows verification. This is not an official Codex integration.
 
 **Publish:** `gh auth login` followed by `.\publish.ps1` creates and pushes the prepared repository under your authenticated GitHub account.
 
