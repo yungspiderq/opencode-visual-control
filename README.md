@@ -60,7 +60,7 @@ gh auth login
 
 - На каждом запуске контроллер **по умолчанию на паузе**. Только локальное нажатие `RESUME` разрешает команды (включая скриншоты). Нажми `Esc`, `PAUSE` или `✕` для остановки.
 - Данные экрана остаются на компьютере **до передачи OpenCode/подключённой модели**. Политика хранения и обработки зависит от выбранного провайдера модели. Не открывай чувствительную информацию в поле зрения агента.
-- Ввод кириллицы и другого Unicode использует буфер обмена и **заменяет его предыдущие данные**. Сохранить их перед использованием при необходимости.
+- Ввод текста не зависит от раскладки: `computer_type` и `computer_hotkey` используют `SendInput`, поэтому латиница, кириллица и любой Unicode работают при любой активной раскладке, а буфер обмена не изменяется.
 - Поддерживается **основной монитор**; скриншоты могут масштабироваться (по умолчанию до 1600 px в ширину), поэтому для координат учитывай масштаб. Скриншот и координаты в GUI относятся к физическому размеру основного экрана.
 - Не управляет UAC/secure desktop и окнами с более высокими правами; **не запускай от администратора**.
 - Действия короткие, не предназначены для дистанционного контроля. Подсветка и внешний вид плашки будут отличаться от официального Codex.
@@ -96,7 +96,7 @@ Windows-only, Codex-style **visible desktop automation** for OpenCode via a Pyth
 
 **Quick start:** install Python 3.10+ and OpenCode, then from Windows PowerShell run `Set-ExecutionPolicy -Scope Process Bypass`, `.\install.ps1`, and `.\start-host.ps1`. Click **RESUME** in the overlay, restart OpenCode, and ask the agent to use the `visual_computer` MCP tools. For older OpenCode 1 installations, use `.\install.ps1 -Legacy`.
 
-**Security:** always starts paused, local loopback with random token, no shell tool; screen images are then sent through the configured LLM provider by OpenCode. Unicode typing replaces your clipboard. Only primary monitor supported. Not Windows-tested in this environment; v0.1.0 is a prototype, not an official Codex integration.
+**Security:** always starts paused, local loopback with random token, no shell tool; screen images are then sent through the configured LLM provider by OpenCode. Typing is layout-independent and does not touch the clipboard. Only primary monitor supported. Not Windows-tested in this environment; v0.1.0 is a prototype, not an official Codex integration.
 
 **Publish:** `gh auth login` followed by `.\publish.ps1` creates and pushes the prepared repository under your authenticated GitHub account.
 

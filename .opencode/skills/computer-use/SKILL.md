@@ -14,5 +14,5 @@ compatibility: OpenCode on Windows with OpenCode Visual Control MCP
 - Pause and ask for the user's decision before sending messages, purchases, deletion, changing settings, or any irreversible action. Never access secrets, credentials, or private content unless necessary and explicitly approved.
 - ESC is the user's global **emergency stop**. Automation must not press Esc or try to resume itself. The host starts PAUSED each time; only a user click can authorize access.
 - The mouse really moves. Do not move it needlessly; keep actions understandable. Avoid simultaneous user and agent interaction.
-- Unicode text is pasted through the Windows clipboard and will replace its contents. Mention this when it matters.
+- Typing is layout-independent: `computer_type` and `computer_hotkey` go through `SendInput`, so Cyrillic, Latin and other Unicode text work regardless of the active keyboard layout, and the clipboard is not modified.
 - The implementation currently uses **primary monitor** coordinates; it does not control elevated windows or the secure desktop.

@@ -4,13 +4,106 @@ No network, shell, arbitrary code execution or hidden remote operation.
 """
 from __future__ import annotations
 
+import ctypes
 import math
 import threading
 import time
+from ctypes import wintypes
 
 
 class ControlStopped(RuntimeError):
     pass
+
+
+# --- Layout-independent keyboard input -------------------------------------
+# PyAutoGUI builds its key table with VkKeyScan against the keyboard layout that
+# is active when it is imported.  On a non-US layout (for example Russian) every
+# Latin letter maps to -1 and PyAutoGUI silently drops it, so "write" types only
+# digits and punctuation and hotkey("ctrl", "v") presses nothing at all.
+# SendInput with KEYEVENTF_UNICODE has no layout dependency.
+
+_INPUT_KEYBOARD = 1
+_KEYEVENTF_KEYUP = 0x0002
+_KEYEVENTF_UNICODE = 0x0004
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_void_p)]
+
+
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_void_p)]
+
+
+class _HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+
+
+class _INPUTUNION(ctypes.Union):
+    _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT), ("hi", _HARDWAREINPUT)]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [("type", wintypes.DWORD), ("union", _INPUTUNION)]
+
+
+VK_NAMES = {
+    "ctrl": 0x11, "alt": 0x12, "shift": 0x10, "win": 0x5B,
+    "enter": 0x0D, "tab": 0x09, "space": 0x20, "backspace": 0x08,
+    "delete": 0x2E, "insert": 0x2D, "home": 0x24, "end": 0x23,
+    "pageup": 0x21, "pagedown": 0x22, "up": 0x26, "down": 0x28,
+    "left": 0x25, "right": 0x27, "esc": 0x1B,
+}
+VK_NAMES.update({f"f{i}": 0x6F + i for i in range(1, 13)})
+
+
+def virtual_key(name: str) -> int:
+    """Virtual-key code for an allowed key name, independent of keyboard layout."""
+    if name in VK_NAMES:
+        return VK_NAMES[name]
+    if len(name) == 1 and name.isascii() and name.isalnum():
+        return ord(name.upper())  # VK_A..VK_Z, VK_0..VK_9
+    raise ValueError("Unsupported key name")
+
+
+class KeySender:
+    """Send keystrokes with SendInput so any layout can type any character."""
+
+    def __init__(self):
+        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+    @staticmethod
+    def _key(vk=0, scan=0, flags=0):
+        return _INPUT(type=_INPUT_KEYBOARD,
+                      union=_INPUTUNION(ki=_KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=None)))
+
+    def _send(self, events):
+        if not events:
+            return
+        array = (_INPUT * len(events))(*events)
+        sent = self.user32.SendInput(len(events), array, ctypes.sizeof(_INPUT))
+        if sent != len(events):
+            raise OSError(ctypes.get_last_error(), "SendInput was blocked by the system")
+
+    def press(self, vk: int) -> None:
+        self._send([self._key(vk=vk), self._key(vk=vk, flags=_KEYEVENTF_KEYUP)])
+
+    def combo(self, keys) -> None:
+        codes = [virtual_key(k) for k in keys]
+        events = [self._key(vk=c) for c in codes]
+        events += [self._key(vk=c, flags=_KEYEVENTF_KEYUP) for c in reversed(codes)]
+        self._send(events)
+
+    def type_char(self, char: str, gate) -> None:
+        # Windows text input is UTF-16: split astral characters into surrogate units.
+        raw = char.encode("utf-16-le")
+        for i in range(0, len(raw), 2):
+            unit = int.from_bytes(raw[i:i + 2], "little")
+            gate.check()
+            self._send([self._key(scan=unit, flags=_KEYEVENTF_UNICODE),
+                        self._key(scan=unit, flags=_KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP)])
 
 
 class SafetyGate:
@@ -49,10 +142,11 @@ class DesktopActions:
         "f9", "f10", "f11", "f12", "insert", "esc",
     } | set("abcdefghijklmnopqrstuvwxyz0123456789")
 
-    def __init__(self, gui, gate: SafetyGate, click_effect=None):
+    def __init__(self, gui, gate: SafetyGate, click_effect=None, keys=None):
         self.gui = gui
         self.gate = gate
         self.click_effect = click_effect or (lambda x, y: None)
+        self.keys = keys or KeySender()
         self.gui.FAILSAFE = True  # upper-left corner triggers PyAutoGUI fail-safe
         self.gui.PAUSE = 0.0
 
@@ -129,17 +223,15 @@ class DesktopActions:
         if not isinstance(text, str) or len(text) > self.MAX_TEXT:
             raise ValueError("text must contain at most 2000 characters")
         interval = self._finite_number(interval, "interval", 0, 0.05)
-        # Unicode input is pasted using the Windows clipboard. This replaces the
-        # clipboard's previous contents; see README for the explicit tradeoff.
-        if any(ord(c) > 127 for c in text):
-            import pyperclip
-            self.gate.check()
-            pyperclip.copy(text)
-            self.gui.hotkey("ctrl", "v")
-            return f"Pasted {len(text)} Unicode characters (clipboard replaced)"
         for char in text:
-            self.gate.check()
-            self.gui.write(char)
+            if char in "\r\n":
+                self.gate.check()
+                self.keys.press(VK_NAMES["enter"])
+            elif char == "\t":
+                self.gate.check()
+                self.keys.press(VK_NAMES["tab"])
+            else:
+                self.keys.type_char(char, self.gate)
             if interval:
                 time.sleep(interval)
         return f"Typed {len(text)} characters"
@@ -154,7 +246,7 @@ class DesktopActions:
         if "esc" in lower:
             raise ValueError("Esc is reserved for the user's emergency stop")
         self.gate.check()
-        self.gui.hotkey(*lower, interval=0.06)
+        self.keys.combo(lower)
         return "Pressed " + "+".join(lower)
 
     def screenshot_png(self, max_width=1600) -> bytes:

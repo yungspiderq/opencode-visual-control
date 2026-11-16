@@ -1,5 +1,5 @@
 import unittest
-from actions import SafetyGate, DesktopActions, ControlStopped
+from actions import SafetyGate, DesktopActions, ControlStopped, virtual_key
 
 
 class FakeGui:
@@ -14,16 +14,26 @@ class FakeGui:
     def click(self, **kwargs): self.log.append(('click',kwargs))
     def mouseDown(self, **kwargs): self.log.append(('down',kwargs))
     def mouseUp(self, **kwargs): self.log.append(('up',kwargs))
-    def hotkey(self, *keys, **kwargs): self.log.append(('hotkey',keys))
-    def write(self, char): self.log.append(('write',char))
     def scroll(self, clicks): self.log.append(('scroll',clicks))
+
+
+class FakeKeys:
+    """Records keystrokes instead of injecting them into the real desktop."""
+    def __init__(self):
+        self.log = []
+    def press(self, vk): self.log.append(('press', vk))
+    def combo(self, keys): self.log.append(('combo', tuple(keys)))
+    def type_char(self, char, gate):
+        gate.check()
+        self.log.append(('char', char))
 
 
 class TestDesktopActions(unittest.TestCase):
     def setUp(self):
         self.gate = SafetyGate()
         self.gui = FakeGui()
-        self.actions = DesktopActions(self.gui, self.gate)
+        self.keys = FakeKeys()
+        self.actions = DesktopActions(self.gui, self.gate, keys=self.keys)
 
     def test_paused_by_default(self):
         with self.assertRaises(ControlStopped):
@@ -53,14 +63,29 @@ class TestDesktopActions(unittest.TestCase):
         self.gate.pause()
         with self.assertRaises(ControlStopped):
             self.actions.type_text('private')
-        self.assertFalse(self.gui.log)
+        self.assertFalse(self.keys.log)
 
     def test_hotkey_and_scroll_validation(self):
         self.gate.resume()
         self.actions.hotkey(['ctrl','s'])
         with self.assertRaises(ValueError):
             self.actions.scroll(99)
-        self.assertIn(('hotkey', ('ctrl','s')), self.gui.log)
+        self.assertIn(('combo', ('ctrl','s')), self.keys.log)
+
+    def test_typing_is_layout_independent(self):
+        self.gate.resume()
+        self.actions.type_text('abc XYZ 123?')  # no gui.write / clipboard involved
+        self.assertEqual(
+            [entry[1] for entry in self.keys.log if entry[0] == 'char'],
+            list('abc XYZ 123?'),
+        )
+        self.assertTrue(all(entry[0] != 'write' for entry in self.gui.log))
+
+    def test_virtual_keys_bypass_layout(self):
+        for name, expected in [('a', 0x41), ('Z', 0x5A), ('7', 0x37), ('ctrl', 0x11), ('f5', 0x74)]:
+            self.assertEqual(virtual_key(name), expected)
+        with self.assertRaises(ValueError):
+            virtual_key('я')
 
     def test_drag_releases_button_on_exception(self):
         self.gate.resume()

@@ -40,8 +40,6 @@ class VisualHost:
         self.root.attributes("-topmost", True)
         self.root.configure(bg="#0d111b")
         self.root.geometry(self._bar_geometry())
-        self.root.bind("<Button-1>", self._drag_start)
-        self.root.bind("<B1-Motion>", self._drag_motion)
 
         bar = tk.Frame(self.root, bg="#0d111b", highlightthickness=1, highlightbackground="#30384a")
         bar.pack(fill="both", expand=True)
@@ -57,6 +55,12 @@ class VisualHost:
         self.toggle.pack(side="left", padx=(3, 5))
         self.close_button = tk.Button(bar, text="✕", command=self._shutdown, bg="#2c3444", fg="white", activebackground="#e14952", activeforeground="white", relief="flat", font=("Segoe UI", 10), padx=9, pady=7, cursor="hand2")
         self.close_button.pack(side="left", padx=(0, 9))
+        # Drag the bar only by its background/labels. A root-wide binding also
+        # fires for the buttons, so a slightly shaky click on RESUME could drag
+        # or move the bar instead of toggling it.
+        for widget in (self.root, bar, mid, self.dot, self.title_label, self.sub):
+            widget.bind("<Button-1>", self._drag_start)
+            widget.bind("<B1-Motion>", self._drag_motion)
         self._click_circle = None
         self.root.after(35, self._pump)
 
@@ -76,6 +80,8 @@ class VisualHost:
         if not hasattr(self, "_drag_x"):
             return
         dx, dy = e.x_root - self._drag_x, e.y_root - self._drag_y
+        if abs(dx) < 3 and abs(dy) < 3:
+            return  # ignore pointer jitter so a click stays a click
         self.root.geometry(f"+{self.root.winfo_x()+dx}+{self.root.winfo_y()+dy}")
         self._drag_x, self._drag_y = e.x_root, e.y_root
 
@@ -152,7 +158,12 @@ class VisualHost:
             GWL_EXSTYLE, WS_EX_TRANSPARENT, WS_EX_LAYERED = -20, 0x20, 0x80000
             getlong = ctypes.windll.user32.GetWindowLongW
             setlong = ctypes.windll.user32.SetWindowLongW
-            setlong(hwnd, GWL_EXSTYLE, getlong(hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT | WS_EX_LAYERED)
+            style = getlong(hwnd, GWL_EXSTYLE)
+            setlong(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED)
+            # Setting WS_EX_LAYERED again drops the colour key that
+            # "-transparentcolor" installed, which would make the whole flash
+            # invisible. Re-apply it so the rings show on a see-through window.
+            ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0x00030201, 0, 0x1)
         except Exception:
             pass
         popup.after(440, lambda: popup.destroy() if popup.winfo_exists() else None)

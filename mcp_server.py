@@ -48,7 +48,7 @@ def computer_scroll(clicks: int, x: int | None = None, y: int | None = None) -> 
 
 @mcp.tool()
 def computer_type(text: str) -> str:
-    """Type up to 2000 characters into the focused app. Unicode text uses clipboard paste and replaces clipboard content; do not use for secrets."""
+    """Type up to 2000 characters into the focused app. Works with any keyboard layout and with any Unicode text; the clipboard is not touched."""
     return request("type", text=text)["message"]
 
 
