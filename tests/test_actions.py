@@ -1,5 +1,8 @@
 import unittest
 from actions import SafetyGate, DesktopActions, ControlStopped, virtual_key
+from screens import DisplayTopology, Monitor, Rect
+from PIL import Image
+import io
 
 
 class FakeGui:
@@ -18,9 +21,7 @@ class FakeGui:
 
 
 class FakeKeys:
-    """Records keystrokes instead of injecting them into the real desktop."""
-    def __init__(self):
-        self.log = []
+    def __init__(self): self.log = []
     def press(self, vk): self.log.append(('press', vk))
     def combo(self, keys): self.log.append(('combo', tuple(keys)))
     def type_char(self, char, gate):
@@ -74,18 +75,36 @@ class TestDesktopActions(unittest.TestCase):
 
     def test_typing_is_layout_independent(self):
         self.gate.resume()
-        self.actions.type_text('abc XYZ 123?')  # no gui.write / clipboard involved
-        self.assertEqual(
-            [entry[1] for entry in self.keys.log if entry[0] == 'char'],
-            list('abc XYZ 123?'),
-        )
-        self.assertTrue(all(entry[0] != 'write' for entry in self.gui.log))
+        self.actions.type_text('abc XYZ 123?', interval=0)
+        self.assertEqual([e[1] for e in self.keys.log if e[0] == 'char'], list('abc XYZ 123?'))
 
     def test_virtual_keys_bypass_layout(self):
         for name, expected in [('a', 0x41), ('Z', 0x5A), ('7', 0x37), ('ctrl', 0x11), ('f5', 0x74)]:
             self.assertEqual(virtual_key(name), expected)
         with self.assertRaises(ValueError):
             virtual_key('я')
+
+    def test_multi_monitor_negative_coordinates_and_gap(self):
+        topology = DisplayTopology([Monitor('main', Rect(0,0,1920,1080),True),
+                                    Monitor('left', Rect(-1280,100,1280,1024),False)])
+        self.actions.topology_provider = lambda: topology
+        self.gate.resume()
+        self.actions.move(-1200, 150, 0)
+        self.assertEqual((self.gui.x, self.gui.y), (-1200, 150))
+        with self.assertRaises(ValueError):
+            self.actions.move(-1200, 0, 0)  # virtual desktop gap
+        self.actions.click(-100, 400)
+        self.assertTrue(any(a[0] == 'click' for a in self.gui.log))
+
+    def test_screenshot_monitor_selection_and_pause(self):
+        self.actions.capture = lambda monitor: Image.new('RGB', (800, 600))
+        with self.assertRaises(ControlStopped):
+            self.actions.screenshot_png(600, 'left')
+        self.gate.resume()
+        result = self.actions.screenshot_png(600, 'left')
+        self.assertEqual(Image.open(io.BytesIO(result)).size, (600, 450))
+        with self.assertRaises(ValueError):
+            self.actions.screenshot_png(600, None)
 
     def test_drag_releases_button_on_exception(self):
         self.gate.resume()

@@ -19,6 +19,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from actions import DesktopActions, SafetyGate
 from bridge import HOST, PORT, STATE_DIR, TOKEN_FILE
+from screens import Win32Displays, VirtualDesktopCapture, set_dpi_awareness
+from windows import WindowManager
+
+
+def _place_physical(widget, x, y, width, height):
+    """Position a Tk toplevel by Win32 physical coordinates, including negative ones.
+
+    Tk geometry strings use negative offsets as distances from the screen edge;
+    SetWindowPos avoids that ambiguity for screens left/above the primary.
+    """
+    widget.update_idletasks()
+    if sys.platform != "win32":
+        widget.geometry(f"{width}x{height}{x:+d}{y:+d}")
+        return
+    hwnd_text = widget.wm_frame()
+    hwnd = int(hwnd_text, 0) if isinstance(hwnd_text, str) else int(hwnd_text)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    user32.SetWindowPos.restype = ctypes.c_int
+    if not user32.SetWindowPos(ctypes.c_void_p(hwnd), None, int(x), int(y),
+                               int(width), int(height), 0x0004 | 0x0010 | 0x0040):
+        raise OSError(ctypes.get_last_error(), "Unable to position overlay")
 
 
 class VisualHost:
@@ -29,7 +52,12 @@ class VisualHost:
         self.busy = threading.Lock()
         self.events = queue.SimpleQueue()
         self.token = secrets.token_urlsafe(40)
-        self.desktop = DesktopActions(gui, self.gate, self.flash_click)
+        self.displays = Win32Displays()
+        self.capture = VirtualDesktopCapture(self.displays.topology)
+        self.windows = WindowManager()
+        self.desktop = DesktopActions(gui, self.gate, self.flash_click,
+                                      topology_provider=self.displays.topology,
+                                      capture=self.capture.capture)
         self.server = None
         self._active = False
         self._idle_generation = 0
@@ -55,13 +83,12 @@ class VisualHost:
         self.toggle.pack(side="left", padx=(3, 5))
         self.close_button = tk.Button(bar, text="✕", command=self._shutdown, bg="#2c3444", fg="white", activebackground="#e14952", activeforeground="white", relief="flat", font=("Segoe UI", 10), padx=9, pady=7, cursor="hand2")
         self.close_button.pack(side="left", padx=(0, 9))
-        # Drag the bar only by its background/labels. A root-wide binding also
-        # fires for the buttons, so a slightly shaky click on RESUME could drag
-        # or move the bar instead of toggling it.
         for widget in (self.root, bar, mid, self.dot, self.title_label, self.sub):
             widget.bind("<Button-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_motion)
         self._click_circle = None
+        p = self.displays.topology().primary.rect
+        _place_physical(self.root, p.left+(p.width-470)//2, p.top+18, 470, 64)
         self.root.after(35, self._pump)
 
         self.keyboard_listener = self.keyboard_module.Listener(on_press=self._on_key)
@@ -69,9 +96,10 @@ class VisualHost:
 
     def _bar_geometry(self):
         w = 470
-        screen = self.gui.size()
-        x = max(0, (screen[0] - w) // 2)
-        return f"{w}x64+{x}+18"
+        primary = self.displays.topology().primary.rect
+        x = primary.left + (primary.width - w) // 2
+        y = primary.top + 18
+        return f"{w}x64{x:+d}{y:+d}"
 
     def _drag_start(self, e):
         self._drag_x, self._drag_y = e.x_root, e.y_root
@@ -81,8 +109,9 @@ class VisualHost:
             return
         dx, dy = e.x_root - self._drag_x, e.y_root - self._drag_y
         if abs(dx) < 3 and abs(dy) < 3:
-            return  # ignore pointer jitter so a click stays a click
-        self.root.geometry(f"+{self.root.winfo_x()+dx}+{self.root.winfo_y()+dy}")
+            return
+        _place_physical(self.root, self.root.winfo_x()+dx, self.root.winfo_y()+dy,
+                        self.root.winfo_width(), self.root.winfo_height())
         self._drag_x, self._drag_y = e.x_root, e.y_root
 
     def _on_key(self, key):
@@ -144,7 +173,7 @@ class VisualHost:
         popup.attributes("-topmost", True)
         chroma = "#010203"
         popup.configure(bg=chroma)
-        popup.geometry(f"68x68+{max(0,x-34)}+{max(0,y-34)}")
+        popup.geometry("68x68+0+0")
         try:
             popup.wm_attributes("-transparentcolor", chroma)
         except tk.TclError:
@@ -158,14 +187,11 @@ class VisualHost:
             GWL_EXSTYLE, WS_EX_TRANSPARENT, WS_EX_LAYERED = -20, 0x20, 0x80000
             getlong = ctypes.windll.user32.GetWindowLongW
             setlong = ctypes.windll.user32.SetWindowLongW
-            style = getlong(hwnd, GWL_EXSTYLE)
-            setlong(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED)
-            # Setting WS_EX_LAYERED again drops the colour key that
-            # "-transparentcolor" installed, which would make the whole flash
-            # invisible. Re-apply it so the rings show on a see-through window.
+            setlong(hwnd, GWL_EXSTYLE, getlong(hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT | WS_EX_LAYERED)
             ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0x00030201, 0, 0x1)
         except Exception:
             pass
+        _place_physical(popup, x-34, y-34, 68, 68)
         popup.after(440, lambda: popup.destroy() if popup.winfo_exists() else None)
 
     def _shutdown(self):
@@ -181,17 +207,25 @@ class VisualHost:
 
     def perform(self, action, payload):
         if action == "status":
-            width, height = self.gui.size()
-            return {"enabled": self.gate.enabled, "width": width, "height": height}
+            topo = self.displays.topology()
+            return {"enabled": self.gate.enabled, "width": topo.primary.rect.width,
+                    "height": topo.primary.rect.height, "virtual": topo.virtual.as_dict(),
+                    "monitor_count": len(topo.monitors)}
+        if action == "displays":
+            return self.displays.topology().as_dict()
         self.gate.check()
         with self.busy:
             self.gate.check()
             self.events.put(("active", None))
             try:
                 if action == "screenshot":
-                    raw = self.desktop.screenshot_png(payload.get("max_width", 1600))
+                    raw = self.desktop.screenshot_png(payload.get("max_width", 1600), payload.get("monitor_id", "all"))
                     return {"image": base64.b64encode(raw).decode("ascii")}
-                if action == "move":
+                if action == "windows":
+                    return {"windows": self.windows.list_windows(payload.get("limit", 80))}
+                if action == "focus_window":
+                    output = self.windows.activate(payload.get("hwnd"))
+                elif action == "move":
                     output = self.desktop.move(payload.get("x"), payload.get("y"), payload.get("duration", 0.35))
                 elif action == "click":
                     output = self.desktop.click(payload.get("x"), payload.get("y"), payload.get("button", "left"), payload.get("count", 1))
@@ -269,6 +303,8 @@ class VisualHost:
 def main():
     if sys.platform != "win32":
         raise SystemExit("This host requires Windows 10/11 and an interactive desktop.")
+    awareness = set_dpi_awareness()  # BEFORE PyAutoGUI import and Tk root creation
+    print(f"DPI awareness: {awareness}")
     import pyautogui
     from pynput import keyboard
     app = VisualHost(pyautogui, keyboard)

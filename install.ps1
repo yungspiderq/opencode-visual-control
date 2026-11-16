@@ -10,7 +10,7 @@ $dest = Join-Path $env:LOCALAPPDATA 'OpenCodeVisualControl'
 $settings = Join-Path $HOME '.config\opencode'
 $skills = Join-Path $settings 'skills\computer-use'
 New-Item -ItemType Directory -Force -Path $dest, $skills | Out-Null
-foreach ($file in @('actions.py','host.py','bridge.py','mcp_server.py','requirements.txt')) {
+foreach ($file in @('actions.py','host.py','bridge.py','mcp_server.py','screens.py','windows.py','requirements.txt')) {
   Copy-Item -Force (Join-Path $source $file) (Join-Path $dest $file)
 }
 Copy-Item -Force (Join-Path $source '.opencode\skills\computer-use\SKILL.md') (Join-Path $skills 'SKILL.md')

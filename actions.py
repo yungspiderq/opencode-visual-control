@@ -15,62 +15,39 @@ class ControlStopped(RuntimeError):
     pass
 
 
-# --- Layout-independent keyboard input -------------------------------------
-# PyAutoGUI builds its key table with VkKeyScan against the keyboard layout that
-# is active when it is imported.  On a non-US layout (for example Russian) every
-# Latin letter maps to -1 and PyAutoGUI silently drops it, so "write" types only
-# digits and punctuation and hotkey("ctrl", "v") presses nothing at all.
-# SendInput with KEYEVENTF_UNICODE has no layout dependency.
-
+# Layout-independent Windows SendInput; type as UTF-16 units.
 _INPUT_KEYBOARD = 1
-_KEYEVENTF_KEYUP = 0x0002
-_KEYEVENTF_UNICODE = 0x0004
-
+_KEYEVENTF_KEYUP = 2
+_KEYEVENTF_UNICODE = 4
 
 class _MOUSEINPUT(ctypes.Structure):
     _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
                 ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_void_p)]
-
-
 class _KEYBDINPUT(ctypes.Structure):
     _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
                 ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_void_p)]
-
-
 class _HARDWAREINPUT(ctypes.Structure):
     _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
-
-
 class _INPUTUNION(ctypes.Union):
     _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT), ("hi", _HARDWAREINPUT)]
-
-
 class _INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("union", _INPUTUNION)]
 
-
-VK_NAMES = {
-    "ctrl": 0x11, "alt": 0x12, "shift": 0x10, "win": 0x5B,
-    "enter": 0x0D, "tab": 0x09, "space": 0x20, "backspace": 0x08,
-    "delete": 0x2E, "insert": 0x2D, "home": 0x24, "end": 0x23,
-    "pageup": 0x21, "pagedown": 0x22, "up": 0x26, "down": 0x28,
-    "left": 0x25, "right": 0x27, "esc": 0x1B,
-}
+VK_NAMES = {"ctrl": 0x11, "alt": 0x12, "shift": 0x10, "win": 0x5B,
+            "enter": 0x0D, "tab": 0x09, "space": 0x20, "backspace": 0x08,
+            "delete": 0x2E, "insert": 0x2D, "home": 0x24, "end": 0x23,
+            "pageup": 0x21, "pagedown": 0x22, "up": 0x26, "down": 0x28,
+            "left": 0x25, "right": 0x27, "esc": 0x1B}
 VK_NAMES.update({f"f{i}": 0x6F + i for i in range(1, 13)})
 
-
-def virtual_key(name: str) -> int:
-    """Virtual-key code for an allowed key name, independent of keyboard layout."""
+def virtual_key(name):
     if name in VK_NAMES:
         return VK_NAMES[name]
     if len(name) == 1 and name.isascii() and name.isalnum():
-        return ord(name.upper())  # VK_A..VK_Z, VK_0..VK_9
+        return ord(name.upper())
     raise ValueError("Unsupported key name")
 
-
 class KeySender:
-    """Send keystrokes with SendInput so any layout can type any character."""
-
     def __init__(self):
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
 
@@ -87,21 +64,20 @@ class KeySender:
         if sent != len(events):
             raise OSError(ctypes.get_last_error(), "SendInput was blocked by the system")
 
-    def press(self, vk: int) -> None:
+    def press(self, vk):
         self._send([self._key(vk=vk), self._key(vk=vk, flags=_KEYEVENTF_KEYUP)])
 
-    def combo(self, keys) -> None:
+    def combo(self, keys):
         codes = [virtual_key(k) for k in keys]
         events = [self._key(vk=c) for c in codes]
         events += [self._key(vk=c, flags=_KEYEVENTF_KEYUP) for c in reversed(codes)]
         self._send(events)
 
-    def type_char(self, char: str, gate) -> None:
-        # Windows text input is UTF-16: split astral characters into surrogate units.
+    def type_char(self, char, gate):
         raw = char.encode("utf-16-le")
         for i in range(0, len(raw), 2):
-            unit = int.from_bytes(raw[i:i + 2], "little")
             gate.check()
+            unit = int.from_bytes(raw[i:i+2], "little")
             self._send([self._key(scan=unit, flags=_KEYEVENTF_UNICODE),
                         self._key(scan=unit, flags=_KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP)])
 
@@ -142,11 +118,13 @@ class DesktopActions:
         "f9", "f10", "f11", "f12", "insert", "esc",
     } | set("abcdefghijklmnopqrstuvwxyz0123456789")
 
-    def __init__(self, gui, gate: SafetyGate, click_effect=None, keys=None):
+    def __init__(self, gui, gate: SafetyGate, click_effect=None, keys=None, topology_provider=None, capture=None):
         self.gui = gui
         self.gate = gate
         self.click_effect = click_effect or (lambda x, y: None)
         self.keys = keys or KeySender()
+        self.topology_provider = topology_provider
+        self.capture = capture
         self.gui.FAILSAFE = True  # upper-left corner triggers PyAutoGUI fail-safe
         self.gui.PAUSE = 0.0
 
@@ -157,10 +135,17 @@ class DesktopActions:
         return float(v)
 
     def _point(self, x, y) -> tuple[int, int]:
-        width, height = self.gui.size()
-        xf = self._finite_number(x, "x", 0, width - 1)
-        yf = self._finite_number(y, "y", 0, height - 1)
-        return round(xf), round(yf)
+        if self.topology_provider is None:
+            width, height = self.gui.size()
+            xf = self._finite_number(x, "x", 0, width - 1)
+            yf = self._finite_number(y, "y", 0, height - 1)
+            return round(xf), round(yf)
+        xf = self._finite_number(x, "x", -100000, 100000)
+        yf = self._finite_number(y, "y", -100000, 100000)
+        px, py = round(xf), round(yf)
+        if not self.topology_provider().contains(px, py):
+            raise ValueError("Point falls outside all connected monitors")
+        return px, py
 
     def move(self, x, y, duration=0.35) -> str:
         self.gate.check()
@@ -249,12 +234,15 @@ class DesktopActions:
         self.keys.combo(lower)
         return "Pressed " + "+".join(lower)
 
-    def screenshot_png(self, max_width=1600) -> bytes:
+    def screenshot_png(self, max_width=1600, monitor_id="all") -> bytes:
         self.gate.check()
-        max_width = int(self._finite_number(max_width, "max_width", 320, 1920))
+        max_width = int(self._finite_number(max_width, "max_width", 320, 4096))
         import io
         from PIL import Image
-        picture = self.gui.screenshot()
+        if not isinstance(monitor_id, str) or len(monitor_id) > 128:
+            raise ValueError("Invalid monitor id")
+        picture = self.capture(monitor_id) if self.capture else self.gui.screenshot()
+        self.gate.check()
         if picture.width > max_width:
             ratio = max_width / picture.width
             picture = picture.resize((max_width, max(1, round(picture.height * ratio))), Image.Resampling.LANCZOS)
